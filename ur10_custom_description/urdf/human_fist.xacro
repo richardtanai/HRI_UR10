@@ -1,0 +1,60 @@
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+  
+  <!-- Human Fist Parameters -->
+  <xacro:property name="fist_length" value="0.12" />  <!-- 12cm length -->
+  <xacro:property name="fist_width" value="0.08" />   <!-- 8cm width -->
+  <xacro:property name="fist_height" value="0.10" />  <!-- 10cm height -->
+  <xacro:property name="fist_mass" value="0.5" />     <!-- 0.5kg -->
+  
+  <xacro:macro name="human_fist" params="parent *origin">
+    
+    <!-- Fist Link -->
+    <link name="fist_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur10_custom_description/meshes/UR10_FIST_m.stl" scale="1 1 1"/>
+        </geometry>
+        <material name="grey">
+          <color rgba="0.5 0.5 0.5 1.0"/>
+        </material>
+      </visual>
+      
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur10_custom_description/meshes/UR10_FIST_m.stl" scale="1 1 1"/>
+        </geometry>
+      </collision>
+      
+      <inertial>
+        <origin xyz="0 0 ${fist_length/2}" rpy="0 0 0"/>
+        <mass value="${fist_mass}"/>
+        <inertia ixx="${(fist_mass/12) * (fist_width*fist_width + fist_length*fist_length)}" 
+                 ixy="0.0" 
+                 ixz="0.0" 
+                 iyy="${(fist_mass/12) * (fist_width*fist_width + fist_length*fist_length)}" 
+                 iyz="0.0" 
+                 izz="${(fist_mass/12) * (fist_width*fist_width + fist_width*fist_width)}"/>
+      </inertial>
+    </link>
+    
+    <!-- Joint connecting fist to parent (tool0) -->
+    <joint name="fist_joint" type="fixed">
+      <xacro:insert_block name="origin"/>
+      <parent link="${parent}"/>
+      <child link="fist_link"/>
+    </joint>
+    
+    <!-- Optional: Add a tip frame for the fist -->
+    <link name="fist_tip_link"/>
+    
+    <joint name="fist_tip_joint" type="fixed">
+      <origin xyz="0 0 ${fist_length}" rpy="0 0 0"/>
+      <parent link="fist_link"/>
+      <child link="fist_tip_link"/>
+    </joint>
+    
+  </xacro:macro>
+  
+</robot>

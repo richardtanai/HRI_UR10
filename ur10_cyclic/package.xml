@@ -24,9 +24,13 @@
   <exec_depend>message_filters</exec_depend> <exec_depend>ultralytics</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>rqt_gui</exec_depend>
+  <exec_depend>rqt_gui_py</exec_depend>
 
 
   <export>
     <build_type>ament_python</build_type>
+    <rqt_gui plugin="${prefix}/plugin_arduino_monitor.xml"/>
   </export>
 </package>

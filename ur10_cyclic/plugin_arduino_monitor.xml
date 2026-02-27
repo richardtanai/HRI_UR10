@@ -1,0 +1,18 @@
+<library path="src">
+    <class name="ArduinoRqtMonitor" type="ur10_cyclic.arduino_rqt_monitor.ArduinoRqtMonitor"
+           base_class_type="rqt_gui_py::Plugin">
+        <description>
+            Real-time monitoring dashboard for Arduino bridge topics.
+        </description>
+        <qtgui>
+            <group>
+                <label>Arduino</label>
+                <icon type="theme">applications-system</icon>
+                <statustip>Plugins for Arduino monitoring.</statustip>
+            </group>
+            <label>Arduino Monitor</label>
+            <icon type="theme">utilities-system-monitor</icon>
+            <statustip>Monitor Arduino weight, LED status, and state with real-time visualization.</statustip>
+        </qtgui>
+    </class>
+</library>
