@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import threading
+import yaml
 from datetime import datetime
 from collections import deque
 
@@ -12,20 +13,22 @@ import glob
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QGroupBox, QTextEdit, QCheckBox,
-    QSplitter, QFrame, QGridLayout, QFileDialog, QComboBox, QSpinBox
+    QSplitter, QFrame, QGridLayout, QFileDialog, QComboBox, QSpinBox,
+    QInputDialog, QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QColor, QPalette
 
 # Matplotlib for plotting
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from tf2_msgs.msg import TFMessage
-from std_msgs.msg import String, Float32
+from std_msgs.msg import String, Float32, Empty
 from std_srvs.srv import Trigger
 from ur_msgs.msg import IOStates
 try:
@@ -71,11 +74,21 @@ class RosNode(Node):
         self.state_sub = self.create_subscription(
             String, '/arduino/state', self.state_callback, 10
         )
+        self.perf_robot_sub = self.create_subscription(
+            Empty, '/perfect_timing_robot', self.perf_robot_callback, 10
+        )
+        self.perf_human_sub = self.create_subscription(
+            Empty, '/perfect_timing_human', self.perf_human_callback, 10
+        )
+        self.perfect_timing_robot_flag = False
+        self.perfect_timing_human_flag = False
         
         # Publishers
         self.duration_pub = self.create_publisher(String, '/aruco_sequence/durations', 10)
         self.robot_seq_pub = self.create_publisher(String, '/robot_sequence/durations', 10)
         self.robot_seq_fb_pub = self.create_publisher(String, '/robot_sequence/durations_feedback', 10)
+        self.series_pub = self.create_publisher(String, '/robot_sequence/series', 10)
+        self.series_fb_pub = self.create_publisher(String, '/robot_sequence/series_feedback', 10)
         self.led_state_pub = self.create_publisher(String, '/arduino/led_color_cmd', 10)
         
         # Service Clients
@@ -99,6 +112,12 @@ class RosNode(Node):
         
         self.current_safety_mode = "UNKNOWN"
         self.is_estop = False
+        self.sequence_status = "IDLE"  # IDLE, RUNNING, COMPLETED
+        
+        # Subscribe to sequencer status for series auto-advance
+        self.seq_status_sub = self.create_subscription(
+            String, '/robot_sequence/status', self.seq_status_callback, 10
+        )
         
         self.robot_active = False
         self.camera_active = False
@@ -145,6 +164,14 @@ class RosNode(Node):
     def state_callback(self, msg):
         self.current_state = msg.data
 
+    def perf_robot_callback(self, msg):
+        self.get_logger().info("--- PERFECT TIMING ROBOT ---")
+        self.perfect_timing_robot_flag = True
+
+    def perf_human_callback(self, msg):
+        self.get_logger().info("--- PERFECT TIMING HUMAN ---")
+        self.perfect_timing_human_flag = True
+
     def safety_callback(self, msg):
         # Map mode to string
         modes = {
@@ -178,6 +205,9 @@ class RosNode(Node):
         if now - self.last_robot_msg > 2e9: self.robot_active = False
         if now - self.last_camera_msg > 2e9: self.camera_active = False
         if now - self.last_arduino_msg > 2e9: self.arduino_active = False
+
+    def seq_status_callback(self, msg):
+        self.sequence_status = msg.data
 
     def call_service_nonblocking(self, client, name):
         if not client.service_is_ready():
@@ -400,6 +430,27 @@ class MainWindow(QMainWindow):
         self.seq_node_btn.clicked.connect(self.toggle_sequencer_node)
         seq_layout.addWidget(self.seq_node_btn)
         
+        # ── Preset Selector ──
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Preset:"))
+        self.preset_dropdown = QComboBox()
+        self.preset_dropdown.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.preset_dropdown.currentIndexChanged.connect(self.apply_preset)
+        preset_layout.addWidget(self.preset_dropdown, 1)
+        
+        self.btn_import_preset = QPushButton("Import")
+        self.btn_import_preset.setToolTip("Load presets from a YAML file")
+        self.btn_import_preset.setStyleSheet("background-color: #607D8B; color: white;")
+        self.btn_import_preset.clicked.connect(self.import_sequence_from_yaml)
+        preset_layout.addWidget(self.btn_import_preset)
+        
+        self.btn_save_preset = QPushButton("Save")
+        self.btn_save_preset.setToolTip("Save current settings as a new preset")
+        self.btn_save_preset.setStyleSheet("background-color: #795548; color: white;")
+        self.btn_save_preset.clicked.connect(self.save_preset_to_yaml)
+        preset_layout.addWidget(self.btn_save_preset)
+        seq_layout.addLayout(preset_layout)
+        
         # LED Settings
         led_layout = QHBoxLayout()
         led_layout.addWidget(QLabel("LED Sync:"))
@@ -442,8 +493,112 @@ class MainWindow(QMainWindow):
         self.seq_start_btn.setStyleSheet("background-color: #FF5722; color: white;")
         seq_layout.addWidget(self.seq_start_btn)
         
+        # Perfect Timing Indicators
+        timing_layout = QHBoxLayout()
+        self.ind_timing_robot = QLabel("Robot Hit")
+        self.ind_timing_robot.setAlignment(Qt.AlignCenter)
+        self.ind_timing_robot.setStyleSheet("background-color: lightgray; color: black; padding: 10px; border-radius: 5px; font-weight: bold;")
+        timing_layout.addWidget(self.ind_timing_robot)
+
+        self.ind_timing_human = QLabel("Human Hit")
+        self.ind_timing_human.setAlignment(Qt.AlignCenter)
+        self.ind_timing_human.setStyleSheet("background-color: lightgray; color: black; padding: 10px; border-radius: 5px; font-weight: bold;")
+        timing_layout.addWidget(self.ind_timing_human)
+
+        seq_layout.addLayout(timing_layout)
+        
         seq_group.setLayout(seq_layout)
         left_layout.addWidget(seq_group, 2, 0)
+        
+        # Store preset data and load defaults
+        self.preset_data = []       # list of preset dicts
+        self.active_preset_file = ""  # path to last-loaded YAML
+
+        # ════════════════════════════════════════════
+        # Series Composer Section
+        # ════════════════════════════════════════════
+        series_group = QGroupBox("Series Composer")
+        series_layout = QVBoxLayout()
+        
+        # Series list
+        self.series_list = QListWidget()
+        self.series_list.setStyleSheet(
+            "background-color: #1e1e1e; color: #d4d4d4; font-family: Monospace; "
+            "font-size: 11px; border: 1px solid #444;"
+        )
+        self.series_list.setMaximumHeight(120)
+        series_layout.addWidget(self.series_list)
+        
+        # Internal data store: list of preset dicts for the series
+        self.series_items = []
+        self.series_running = False
+        self.series_current_index = 0
+        
+        # Add / Remove row
+        series_btn_row1 = QHBoxLayout()
+        
+        self.btn_series_add = QPushButton("+ Add Preset")
+        self.btn_series_add.setToolTip("Append the currently selected preset to the series")
+        self.btn_series_add.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.btn_series_add.clicked.connect(self.series_add_preset)
+        series_btn_row1.addWidget(self.btn_series_add)
+        
+        self.btn_series_remove = QPushButton("− Remove")
+        self.btn_series_remove.setStyleSheet("background-color: #f44336; color: white;")
+        self.btn_series_remove.clicked.connect(self.series_remove_selected)
+        series_btn_row1.addWidget(self.btn_series_remove)
+        
+        self.btn_series_up = QPushButton("▲")
+        self.btn_series_up.setFixedWidth(32)
+        self.btn_series_up.clicked.connect(self.series_move_up)
+        series_btn_row1.addWidget(self.btn_series_up)
+        
+        self.btn_series_down = QPushButton("▼")
+        self.btn_series_down.setFixedWidth(32)
+        self.btn_series_down.clicked.connect(self.series_move_down)
+        series_btn_row1.addWidget(self.btn_series_down)
+        
+        self.btn_series_clear = QPushButton("Clear")
+        self.btn_series_clear.clicked.connect(self.series_clear)
+        series_btn_row1.addWidget(self.btn_series_clear)
+        
+        series_layout.addLayout(series_btn_row1)
+        
+        # Execute / Stop / Save / Load row
+        series_btn_row2 = QHBoxLayout()
+        
+        self.btn_series_exec = QPushButton("▶ Execute Series")
+        self.btn_series_exec.setStyleSheet("background-color: #009688; color: white; font-weight: bold;")
+        self.btn_series_exec.clicked.connect(self.series_execute)
+        series_btn_row2.addWidget(self.btn_series_exec)
+        
+        self.btn_series_stop = QPushButton("■ Stop")
+        self.btn_series_stop.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+        self.btn_series_stop.clicked.connect(self.series_stop)
+        self.btn_series_stop.setEnabled(False)
+        series_btn_row2.addWidget(self.btn_series_stop)
+        
+        self.btn_series_save = QPushButton("Save")
+        self.btn_series_save.setToolTip("Save current series to YAML")
+        self.btn_series_save.setStyleSheet("background-color: #795548; color: white;")
+        self.btn_series_save.clicked.connect(self.series_save_to_yaml)
+        series_btn_row2.addWidget(self.btn_series_save)
+        
+        self.btn_series_load = QPushButton("Load")
+        self.btn_series_load.setToolTip("Load a series from YAML")
+        self.btn_series_load.setStyleSheet("background-color: #607D8B; color: white;")
+        self.btn_series_load.clicked.connect(self.series_load_from_yaml)
+        series_btn_row2.addWidget(self.btn_series_load)
+        
+        series_layout.addLayout(series_btn_row2)
+        
+        # Series progress label
+        self.series_status_label = QLabel("Series: Idle")
+        self.series_status_label.setStyleSheet("color: gray; font-weight: bold;")
+        series_layout.addWidget(self.series_status_label)
+        
+        series_group.setLayout(series_layout)
+        left_layout.addWidget(series_group, 2, 1, 2, 1)  # span rows 2-3, column 1
 
         # Visualization Section
         viz_group = QGroupBox("Visualization")
@@ -479,7 +634,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.rec_status)
         rec_layout.addLayout(btn_layout)
         rec_group.setLayout(rec_layout)
-        left_layout.addWidget(rec_group, 3, 1)
+        left_layout.addWidget(rec_group, 4, 0)
 
         # Playback Section
         play_group = QGroupBox("Bag Playback")
@@ -510,7 +665,7 @@ class MainWindow(QMainWindow):
         play_layout.addLayout(play_btn_layout)
         
         play_group.setLayout(play_layout)
-        left_layout.addWidget(play_group, 4, 0)
+        left_layout.addWidget(play_group, 4, 1)
 
         # Safety Section
         safe_group = QGroupBox("Safety & Recovery")
@@ -551,7 +706,7 @@ class MainWindow(QMainWindow):
         safe_layout.addLayout(play_btn_layout)
         
         safe_group.setLayout(safe_layout)
-        left_layout.addWidget(safe_group, 2, 1)
+        left_layout.addWidget(safe_group, 5, 0)
 
         # Tools Section
         misc_group = QGroupBox("Tools")
@@ -560,8 +715,8 @@ class MainWindow(QMainWindow):
         self.moveit_btn.clicked.connect(self.toggle_moveit)
         misc_layout.addWidget(self.moveit_btn)
         misc_group.setLayout(misc_layout)
-        left_layout.addWidget(misc_group, 4, 1)
-        left_layout.setRowStretch(5, 1)
+        left_layout.addWidget(misc_group, 5, 1)
+        left_layout.setRowStretch(6, 1)
         
         splitter.addWidget(left_widget)
         
@@ -603,10 +758,12 @@ class MainWindow(QMainWindow):
         # Plot
         self.figure = Figure(figsize=(5, 3))
         self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_title("Weight (g)")
         self.ax.grid(True)
         self.line, = self.ax.plot([], [], 'b-')
+        mon_layout.addWidget(self.toolbar)
         mon_layout.addWidget(self.canvas)
         
         # Controls
@@ -662,6 +819,14 @@ class MainWindow(QMainWindow):
             'playback': False,
             'bag_info': False
         }
+        
+        # Auto-load default presets from package config
+        default_preset_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config', 'sequence_presets.yaml'
+        )
+        if os.path.isfile(default_preset_path):
+            self.load_presets_from_yaml(default_preset_path)
 
     def log_message(self, msg):
         self.log_area.append(msg)
@@ -786,7 +951,7 @@ class MainWindow(QMainWindow):
             bag_name = f"{prefix}_{timestamp}"
             full_path = os.path.join(rec_dir, bag_name)
             
-            topics = "/joint_states /tf /tf_static /mid_mount_joint_states /camera/camera/color/image_raw/compressed /camera/camera/aligned_depth_to_color/image_raw/compressedDepth  /camera/camera/color/camera_info /arduino/weight /arduino/led_color_cmd /arduino/led_color_status /arduino/led_value /arduino/state /safety_mode /hard_estop /soft_estop"
+            topics = "/joint_states /tf /tf_static /mid_mount_joint_states /camera/camera/color/image_raw/compressed /camera/camera/aligned_depth_to_color/image_raw/compressedDepth  /camera/camera/color/camera_info /arduino/weight /arduino/led_color_cmd /arduino/led_color_status /arduino/led_value /arduino/state /safety_mode /hard_estop /soft_estop /perfect_timing_robot /perfect_timing_human"
             
             cmd = f"ros2 bag record -s mcap -o {full_path} {topics}"
             self.launch_manager.launch('recording', cmd)
@@ -834,6 +999,340 @@ class MainWindow(QMainWindow):
             msg.data = f"{text}|{prob}|{led_mode}"
             self.ros_node.robot_seq_fb_pub.publish(msg)
             self.log_message(f"Sent Feedback Sequence Durations: {text} | LED Mode: {led_mode} | Red %: {prob}")
+
+    # ── Preset YAML Functions ──────────────────────────────────
+
+    def load_presets_from_yaml(self, filepath):
+        """Load presets from a YAML file and populate the dropdown."""
+        try:
+            with open(filepath, 'r') as f:
+                data = yaml.safe_load(f)
+            
+            presets = data.get('presets', [])
+            if not presets:
+                self.log_message(f"No presets found in {filepath}")
+                return
+            
+            self.preset_data = presets
+            self.active_preset_file = filepath
+            
+            # Block signals while repopulating to avoid triggering apply_preset
+            self.preset_dropdown.blockSignals(True)
+            self.preset_dropdown.clear()
+            self.preset_dropdown.addItem("-- Select Preset --")
+            for p in presets:
+                self.preset_dropdown.addItem(p.get('name', 'Unnamed'))
+            self.preset_dropdown.blockSignals(False)
+            
+            self.log_message(f"Loaded {len(presets)} presets from: {os.path.basename(filepath)}")
+        except Exception as e:
+            self.log_message(f"Error loading presets: {e}")
+
+    def import_sequence_from_yaml(self):
+        """Open a file dialog to pick a preset YAML file."""
+        # Default to the package config directory
+        default_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config'
+        )
+        if not os.path.isdir(default_dir):
+            default_dir = os.getcwd()
+        
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, 'Import Sequence Presets', default_dir,
+            "YAML Files (*.yaml *.yml)"
+        )
+        if filepath:
+            self.load_presets_from_yaml(filepath)
+
+    def apply_preset(self, index):
+        """Apply the selected preset to the GUI fields."""
+        # index 0 is the placeholder "-- Select Preset --"
+        if index <= 0 or index > len(self.preset_data):
+            return
+        
+        preset = self.preset_data[index - 1]
+        
+        # Durations
+        durations = preset.get('durations', '')
+        self.seq_dur_input.setText(str(durations))
+        
+        # LED mode
+        led_mode = preset.get('led_mode', 'RANDOM')
+        idx = self.led_mode_dropdown.findText(led_mode)
+        if idx >= 0:
+            self.led_mode_dropdown.setCurrentIndex(idx)
+        
+        # Red probability
+        red_prob = preset.get('red_prob', 50)
+        self.seq_red_prob.setValue(int(red_prob))
+        
+        mode = preset.get('mode', 'time')
+        self.log_message(
+            f"Preset applied: {preset.get('name')} | "
+            f"Durations: {durations} | LED: {led_mode} | "
+            f"Red%: {red_prob} | Mode: {mode}"
+        )
+
+    def save_preset_to_yaml(self):
+        """Save the current GUI settings as a new preset, appended to the active YAML file."""
+        # Ask for a preset name
+        name, ok = QInputDialog.getText(self, 'Save Preset', 'Preset name:')
+        if not ok or not name.strip():
+            return
+        
+        new_preset = {
+            'name': name.strip(),
+            'durations': self.seq_dur_input.text(),
+            'led_mode': self.led_mode_dropdown.currentText(),
+            'red_prob': self.seq_red_prob.value(),
+            'mode': 'time'
+        }
+        
+        # Determine target file
+        if self.active_preset_file and os.path.isfile(self.active_preset_file):
+            target = self.active_preset_file
+        else:
+            target, _ = QFileDialog.getSaveFileName(
+                self, 'Save Preset File', os.getcwd(),
+                "YAML Files (*.yaml *.yml)"
+            )
+            if not target:
+                return
+        
+        # Read existing data or create new
+        try:
+            if os.path.isfile(target):
+                with open(target, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+            else:
+                data = {}
+            
+            if 'presets' not in data:
+                data['presets'] = []
+            
+            data['presets'].append(new_preset)
+            
+            with open(target, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            
+            self.log_message(f"Saved preset '{name}' to {os.path.basename(target)}")
+            
+            # Reload to reflect the newly saved preset
+            self.load_presets_from_yaml(target)
+        except Exception as e:
+            self.log_message(f"Error saving preset: {e}")
+
+    # ── Series Composer Functions ────────────────────────────────
+
+    def _series_refresh_list(self):
+        """Rebuild the QListWidget display from self.series_items."""
+        self.series_list.clear()
+        for i, item in enumerate(self.series_items):
+            prefix = ""
+            if self.series_running and i < self.series_current_index:
+                prefix = "✓ "
+            elif self.series_running and i == self.series_current_index:
+                prefix = "▶ "
+            else:
+                prefix = f"{i+1}. "
+            
+            mode_tag = "[T]" if item.get('mode', 'time') == 'time' else "[FB]"
+            display = f"{prefix}{item.get('name', 'Unnamed')} {mode_tag} — {item.get('durations', '')}"
+            self.series_list.addItem(display)
+
+    def series_add_preset(self):
+        """Add the currently selected preset to the series."""
+        idx = self.preset_dropdown.currentIndex()
+        if idx <= 0 or idx > len(self.preset_data):
+            self.log_message("Select a preset first before adding to series.")
+            return
+        
+        import copy
+        preset = copy.deepcopy(self.preset_data[idx - 1])
+        self.series_items.append(preset)
+        self._series_refresh_list()
+        self.log_message(f"Added '{preset.get('name')}' to series (#{len(self.series_items)})")
+
+    def series_remove_selected(self):
+        """Remove the currently selected item from the series."""
+        row = self.series_list.currentRow()
+        if row >= 0 and row < len(self.series_items):
+            removed = self.series_items.pop(row)
+            self._series_refresh_list()
+            self.log_message(f"Removed '{removed.get('name')}' from series")
+
+    def series_move_up(self):
+        """Move the selected series item up by one position."""
+        row = self.series_list.currentRow()
+        if row > 0:
+            self.series_items[row], self.series_items[row-1] = self.series_items[row-1], self.series_items[row]
+            self._series_refresh_list()
+            self.series_list.setCurrentRow(row - 1)
+
+    def series_move_down(self):
+        """Move the selected series item down by one position."""
+        row = self.series_list.currentRow()
+        if row >= 0 and row < len(self.series_items) - 1:
+            self.series_items[row], self.series_items[row+1] = self.series_items[row+1], self.series_items[row]
+            self._series_refresh_list()
+            self.series_list.setCurrentRow(row + 1)
+
+    def series_clear(self):
+        """Clear all items from the series."""
+        self.series_items.clear()
+        self._series_refresh_list()
+        self.log_message("Series cleared.")
+
+    def series_execute(self):
+        """Compose the entire series into one flat sequence and send as a single trajectory."""
+        if not self.series_items:
+            self.log_message("Series is empty. Add presets first.")
+            return
+        
+        import random
+        
+        # Flatten all presets into one durations list + one colors list
+        all_durations = []
+        all_colors = []
+        has_feedback = False
+        
+        for item in self.series_items:
+            dur_str = str(item.get('durations', ''))
+            durations = [float(x.strip()) for x in dur_str.split(',') if x.strip()]
+            led_mode = item.get('led_mode', 'RANDOM').upper()
+            red_prob = int(item.get('red_prob', 50))
+            mode = item.get('mode', 'time')
+            if mode == 'feedback':
+                has_feedback = True
+            
+            # Pre-resolve LED color for each cycle in this preset
+            for dur in durations:
+                if led_mode == 'RANDOM':
+                    color = 'red' if random.randint(1, 100) <= red_prob else 'blue'
+                elif led_mode == 'RED':
+                    color = 'red'
+                elif led_mode == 'BLUE':
+                    color = 'blue'
+                else:
+                    color = 'off'
+                all_durations.append(dur)
+                all_colors.append(color)
+        
+        # Build the message: "dur1,dur2,...|color1,color2,..."
+        dur_str = ','.join(str(d) for d in all_durations)
+        color_str = ','.join(all_colors)
+        msg = String()
+        msg.data = f"{dur_str}|{color_str}"
+        
+        # Use feedback topic if any preset uses feedback mode
+        if has_feedback:
+            self.ros_node.series_fb_pub.publish(msg)
+        else:
+            self.ros_node.series_pub.publish(msg)
+        
+        # Calculate total time
+        total_time = sum(d * 2 for d in all_durations)  # each cycle is 2 moves
+        total_cycles = len(all_durations)
+        
+        # UI state
+        self.series_running = True
+        self.series_current_index = 0
+        self.ros_node.sequence_status = "IDLE"
+        self.btn_series_exec.setEnabled(False)
+        self.btn_series_stop.setEnabled(True)
+        self.series_status_label.setText(f"Series: Running ({total_cycles} cycles, ~{total_time:.0f}s)")
+        self.series_status_label.setStyleSheet("color: #009688; font-weight: bold;")
+        self._series_refresh_list()
+        
+        # Log details
+        self.log_message(f"=== Series Executing as Single Trajectory ===")
+        self.log_message(f"  Total cycles: {total_cycles} | Est. time: {total_time:.1f}s")
+        self.log_message(f"  Mode: {'Feedback' if has_feedback else 'Time-Based'}")
+        self.log_message(f"  Colors: {all_colors}")
+
+    def _series_finished(self):
+        """Called when the entire series has finished."""
+        self.series_running = False
+        self.btn_series_exec.setEnabled(True)
+        self.btn_series_stop.setEnabled(False)
+        self.series_status_label.setText("Series: Completed ✓")
+        self.series_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        self._series_refresh_list()
+        self.log_message("=== Series Completed ===")
+
+    def series_stop(self):
+        """Stop the running series (current sequence will still finish)."""
+        if self.series_running:
+            self.series_running = False
+            self.btn_series_exec.setEnabled(True)
+            self.btn_series_stop.setEnabled(False)
+            self.series_status_label.setText("Series: Stopped")
+            self.series_status_label.setStyleSheet("color: #f44336; font-weight: bold;")
+            self._series_refresh_list()
+            self.log_message(
+                f"Series stopped at step {self.series_current_index + 1}/{len(self.series_items)}. "
+                f"Current sequence may still complete."
+            )
+
+    def series_save_to_yaml(self):
+        """Save the current series composition to a YAML file."""
+        if not self.series_items:
+            self.log_message("Series is empty, nothing to save.")
+            return
+        
+        default_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config'
+        )
+        if not os.path.isdir(default_dir):
+            default_dir = os.getcwd()
+        
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, 'Save Series', default_dir,
+            "YAML Files (*.yaml *.yml)"
+        )
+        if not filepath:
+            return
+        
+        data = {'series': self.series_items}
+        try:
+            with open(filepath, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            self.log_message(f"Series saved ({len(self.series_items)} items) to {os.path.basename(filepath)}")
+        except Exception as e:
+            self.log_message(f"Error saving series: {e}")
+
+    def series_load_from_yaml(self):
+        """Load a series composition from a YAML file."""
+        default_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'config'
+        )
+        if not os.path.isdir(default_dir):
+            default_dir = os.getcwd()
+        
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, 'Load Series', default_dir,
+            "YAML Files (*.yaml *.yml)"
+        )
+        if not filepath:
+            return
+        
+        try:
+            with open(filepath, 'r') as f:
+                data = yaml.safe_load(f)
+            
+            items = data.get('series', [])
+            if not items:
+                self.log_message(f"No series data found in {filepath}")
+                return
+            
+            self.series_items = items
+            self._series_refresh_list()
+            self.log_message(f"Loaded series ({len(items)} items) from {os.path.basename(filepath)}")
+        except Exception as e:
+            self.log_message(f"Error loading series: {e}")
 
     def move_to_start(self):
         self.call_service(self.ros_node.seq_start_client, '/robot_sequence/move_to_start')
@@ -903,6 +1402,17 @@ class MainWindow(QMainWindow):
         self.update_overview_indicator(self.ind_ard, "Arduino:", self.ros_node.arduino_active, self.running_states['arduino'])
         self.update_overview_indicator(self.ind_he, "Handeye:", self.ros_node.handeye_active, self.running_states['handeye'])
 
+        # Check Perfect Timing Flags
+        if self.ros_node.perfect_timing_robot_flag:
+            self.ros_node.perfect_timing_robot_flag = False
+            self.log_message("PERFECT TIMING ROBOT")
+            self.flash_indicator(self.ind_timing_robot, "#E91E63") # Pinkish
+
+        if self.ros_node.perfect_timing_human_flag:
+            self.ros_node.perfect_timing_human_flag = False
+            self.log_message("PERFECT TIMING HUMAN")
+            self.flash_indicator(self.ind_timing_human, "#2196F3") # Blueish
+
         # Update Status Indicators text
         self.update_indicator(self.robot_status, self.ros_node.robot_active, self.running_states['robot'])
         self.update_indicator(self.cam_status, self.ros_node.camera_active, self.running_states['camera'])
@@ -961,6 +1471,15 @@ class MainWindow(QMainWindow):
             if self.ros_node.times[-1] > 10:
                 self.ax.set_xlim(self.ros_node.times[-1] - 10, self.ros_node.times[-1] + 0.5)
             self.canvas.draw()
+        
+        # Series auto-advance: check if sequencer finished and series is running
+        if self.series_running and self.ros_node.sequence_status == "COMPLETED":
+            self.ros_node.sequence_status = "IDLE"  # consume the status
+            self._series_finished()
+
+    def flash_indicator(self, label, color):
+        label.setStyleSheet(f"background-color: {color}; color: white; padding: 10px; border-radius: 5px; font-weight: bold;")
+        QTimer.singleShot(200, lambda: label.setStyleSheet("background-color: lightgray; color: black; padding: 10px; border-radius: 5px; font-weight: bold;"))
 
     def update_indicator(self, label, active, starting):
         if active:

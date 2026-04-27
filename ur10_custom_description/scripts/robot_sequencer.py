@@ -8,7 +8,7 @@ from rclpy.action import ActionClient
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
-from std_msgs.msg import String
+from std_msgs.msg import String, Empty
 from sensor_msgs.msg import JointState
 from ur_msgs.msg import IOStates
 
@@ -60,6 +60,19 @@ class RobotSequencer(Node):
             self.listener_callback_fb,
             10
         )
+        # --- Series Subscribers (pre-computed colors, single trajectory) ---
+        self.series_sub = self.create_subscription(
+            String,
+            '/robot_sequence/series',
+            self.series_callback,
+            10
+        )
+        self.series_fb_sub = self.create_subscription(
+            String,
+            '/robot_sequence/series_feedback',
+            self.series_callback_fb,
+            10
+        )
         self.joint_state_sub = self.create_subscription(
             JointState,
             '/joint_states',
@@ -70,6 +83,11 @@ class RobotSequencer(Node):
         # --- Service ---
         from std_srvs.srv import Trigger
         self.srv_start = self.create_service(Trigger, '/robot_sequence/move_to_start', self.move_to_start_callback)
+        
+        # --- Status Publisher (for Series Composer in GUI) ---
+        self.status_pub = self.create_publisher(String, '/robot_sequence/status', 10)
+        self.pub_timing_robot = self.create_publisher(Empty, '/perfect_timing_robot', 10)
+        self.pub_timing_human = self.create_publisher(Empty, '/perfect_timing_human', 10)
         
         self.execution_thread = None
         self.stop_flag = False
@@ -152,7 +170,54 @@ class RobotSequencer(Node):
         except ValueError:
             self.get_logger().error(f"Invalid format: {msg.data}")
 
+    def series_callback(self, msg):
+        """Handle series: 'dur1,dur2,...|color1,color2,...'"""
+        try:
+            data_parts = msg.data.split('|')
+            durations = [float(x.strip()) for x in data_parts[0].split(',') if x.strip()]
+            colors = [x.strip().lower() for x in data_parts[1].split(',') if x.strip()]
+            
+            if len(colors) != len(durations):
+                self.get_logger().error(f"Series mismatch: {len(durations)} durations vs {len(colors)} colors")
+                return
+            
+            self.get_logger().info(f"Received Series (Time-Based): {len(durations)} cycles")
+            
+            if self.execution_thread and self.execution_thread.is_alive():
+                self.get_logger().warn("Sequence already running. Ignoring.")
+            else:
+                self.stop_flag = False
+                self.execution_thread = threading.Thread(
+                    target=self.execute_series, args=(durations, colors))
+                self.execution_thread.start()
+        except Exception as e:
+            self.get_logger().error(f"Series parse error: {e}")
+
+    def series_callback_fb(self, msg):
+        """Handle series feedback: 'dur1,dur2,...|color1,color2,...'"""
+        try:
+            data_parts = msg.data.split('|')
+            durations = [float(x.strip()) for x in data_parts[0].split(',') if x.strip()]
+            colors = [x.strip().lower() for x in data_parts[1].split(',') if x.strip()]
+            
+            if len(colors) != len(durations):
+                self.get_logger().error(f"Series mismatch: {len(durations)} durations vs {len(colors)} colors")
+                return
+            
+            self.get_logger().info(f"Received Series (Feedback-Based): {len(durations)} cycles")
+            
+            if self.execution_thread and self.execution_thread.is_alive():
+                self.get_logger().warn("Sequence already running. Ignoring.")
+            else:
+                self.stop_flag = False
+                self.execution_thread = threading.Thread(
+                    target=self.execute_series_feedback, args=(durations, colors))
+                self.execution_thread.start()
+        except Exception as e:
+            self.get_logger().error(f"Series parse error: {e}")
+
     def execute_sequence(self, durations, red_prob=50, led_mode="RANDOM"):
+        self.status_pub.publish(String(data="RUNNING"))
         # build the trajectory
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory.joint_names = self.joint_names
@@ -232,6 +297,7 @@ class RobotSequencer(Node):
         # Start time for tracking which waypoint we're on
         start_time = time.time()
         last_color_idx = -1
+        next_waypoint_to_pass = 0
         
         # Wait for execution
         while not get_result_future.done():
@@ -247,6 +313,18 @@ class RobotSequencer(Node):
             # Time elapsed since trajectory started
             elapsed = time.time() - start_time
             
+            while next_waypoint_to_pass < len(points):
+                p = points[next_waypoint_to_pass]
+                wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
+                if elapsed >= wp_time:
+                    if next_waypoint_to_pass % 2 == 0:
+                        self.pub_timing_robot.publish(Empty())
+                    else:
+                        self.pub_timing_human.publish(Empty())
+                    next_waypoint_to_pass += 1
+                else:
+                    break
+                    
             # Find which waypoint we are currently executing
             current_target_idx = 0
             for i, p in enumerate(points):
@@ -273,6 +351,7 @@ class RobotSequencer(Node):
         off_msg.data = "off"
         self.led_pub.publish(off_msg)
         
+        self.status_pub.publish(String(data="COMPLETED"))
         self.get_logger().info("Sequence Completed.")
 
     def execute_sequence_feedback(self, durations, red_prob=50, led_mode="RANDOM"):
@@ -358,6 +437,7 @@ class RobotSequencer(Node):
                 if curr_shoulder_lift < turn_on_threshold and not is_extended_zone:
                     # Crossed the threshold extending outwards
                     is_extended_zone = True
+                    self.pub_timing_robot.publish(Empty())
                     # Grab color for this cycle iteration safely
                     desired_state = cycle_colors[cycle_idx] if cycle_idx < len(cycle_colors) else cycle_colors[-1]
                     
@@ -368,6 +448,7 @@ class RobotSequencer(Node):
                 elif curr_shoulder_lift > turn_off_threshold and is_extended_zone:
                     # Crossed the threshold retracting inwards
                     is_extended_zone = False
+                    self.pub_timing_human.publish(Empty())
                     desired_state = "off"
                     
                     if desired_state != last_led_state:
@@ -383,7 +464,211 @@ class RobotSequencer(Node):
             time.sleep(0.01) # Fast polling for feedback
             
         self.led_pub.publish(String(data="off"))
+        self.status_pub.publish(String(data="COMPLETED"))
         self.get_logger().info("Feedback Sequence Completed.")
+
+    def execute_series(self, durations, colors):
+        """Execute a series as one continuous trajectory with pre-resolved per-cycle colors."""
+        self.status_pub.publish(String(data="RUNNING"))
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory.joint_names = self.joint_names
+        
+        current_time = 0.0
+        points = []
+        
+        if not hasattr(self, 'led_pub'):
+            self.led_pub = self.create_publisher(String, '/arduino/led_color_cmd', 10)
+        
+        led_colors = []
+        
+        for cycle_idx, duration in enumerate(durations):
+            color = colors[cycle_idx]
+            self.get_logger().info(f"--- Series Cycle {cycle_idx+1}: Duration {duration}s, Color: {color} ---")
+            
+            for pose_name in ["Point A", "Start"]:
+                if self.stop_flag:
+                    self.get_logger().info("Series stopped during construction.")
+                    return
+
+                current_time += duration
+                
+                point = JointTrajectoryPoint()
+                point.positions = [float(x) for x in self.poses[pose_name]]
+                point.velocities = [0.0] * len(self.joint_names)
+                point.accelerations = [0.0] * len(self.joint_names)
+                
+                sec = int(current_time)
+                nanosec = int((current_time - sec) * 1e9)
+                point.time_from_start = Duration(sec=sec, nanosec=nanosec)
+                
+                points.append(point)
+                if pose_name == "Point A":
+                    led_colors.append(color)
+                else:
+                    led_colors.append("off")
+
+        goal_msg.trajectory.points = points
+        
+        self.get_logger().info(f"Sending series trajectory with {len(points)} points. Total time: {current_time}s")
+        
+        if not self._action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error("Action server not available!")
+            return
+
+        send_goal_future = self._action_client.send_goal_async(goal_msg)
+        
+        while not send_goal_future.done():
+            if self.stop_flag: return
+            time.sleep(0.1)
+            
+        goal_handle = send_goal_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('Goal rejected')
+            return
+
+        get_result_future = goal_handle.get_result_async()
+        
+        start_time = time.time()
+        last_color_idx = -1
+        next_waypoint_to_pass = 0
+        
+        while not get_result_future.done():
+            if self.stop_flag:
+                self.get_logger().info("Cancelling series goal...")
+                goal_handle.cancel_goal_async()
+                stop_msg = String()
+                stop_msg.data = "off"
+                self.led_pub.publish(stop_msg)
+                return
+                
+            elapsed = time.time() - start_time
+            
+            while next_waypoint_to_pass < len(points):
+                p = points[next_waypoint_to_pass]
+                wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
+                if elapsed >= wp_time:
+                    if next_waypoint_to_pass % 2 == 0:
+                        self.pub_timing_robot.publish(Empty())
+                    else:
+                        self.pub_timing_human.publish(Empty())
+                    next_waypoint_to_pass += 1
+                else:
+                    break
+                    
+            current_target_idx = 0
+            for i, p in enumerate(points):
+                wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
+                if elapsed < wp_time:
+                    current_target_idx = i
+                    break
+            else:
+                current_target_idx = len(points) - 1
+            
+            if current_target_idx != last_color_idx:
+                color_msg = String()
+                color_msg.data = led_colors[current_target_idx]
+                self.led_pub.publish(color_msg)
+                last_color_idx = current_target_idx
+                
+            time.sleep(0.05)
+            
+        result = get_result_future.result().result
+        
+        off_msg = String()
+        off_msg.data = "off"
+        self.led_pub.publish(off_msg)
+        
+        self.status_pub.publish(String(data="COMPLETED"))
+        self.get_logger().info("Series Completed.")
+
+    def execute_series_feedback(self, durations, colors):
+        """Execute a series as one continuous trajectory with feedback-based LED and pre-resolved colors."""
+        self.status_pub.publish(String(data="RUNNING"))
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory.joint_names = self.joint_names
+        current_time = 0.0
+        points = []
+        
+        if not hasattr(self, 'led_pub'):
+            self.led_pub = self.create_publisher(String, '/arduino/led_color_cmd', 10)
+        
+        cycle_colors = list(colors)  # Pre-resolved, use directly
+        for cycle_idx, duration in enumerate(durations):
+            for pose_name in ["Point A", "Start"]:
+                current_time += duration
+                point = JointTrajectoryPoint()
+                point.positions = [float(x) for x in self.poses[pose_name]]
+                point.velocities = [0.0] * len(self.joint_names)
+                point.accelerations = [0.0] * len(self.joint_names)
+                sec = int(current_time)
+                nanosec = int((current_time - sec) * 1e9)
+                point.time_from_start = Duration(sec=sec, nanosec=nanosec)
+                points.append(point)
+
+        goal_msg.trajectory.points = points
+        self.get_logger().info(f"Sending series trajectory (Feedback). Total time: {current_time}s")
+        
+        if not self._action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error("Action server not available!")
+            return
+
+        send_goal_future = self._action_client.send_goal_async(goal_msg)
+        while not send_goal_future.done():
+            if self.stop_flag: return
+            time.sleep(0.1)
+            
+        goal_handle = send_goal_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('Goal rejected')
+            return
+
+        get_result_future = goal_handle.get_result_async()
+        
+        # Real-time feedback loop
+        last_led_state = ""
+        shoulder_idx = self.joint_names.index("shoulder_lift_joint")
+        
+        cycle_idx = 0
+        turn_on_threshold = -1.86
+        turn_off_threshold = -1.83
+        is_extended_zone = False 
+        
+        while not get_result_future.done():
+            if self.stop_flag:
+                goal_handle.cancel_goal_async()
+                self.led_pub.publish(String(data="off"))
+                return
+                
+            if self.current_joint_positions:
+                curr_shoulder_lift = self.current_joint_positions[shoulder_idx]
+                
+                if curr_shoulder_lift < turn_on_threshold and not is_extended_zone:
+                    is_extended_zone = True
+                    self.pub_timing_robot.publish(Empty())
+                    desired_state = cycle_colors[cycle_idx] if cycle_idx < len(cycle_colors) else cycle_colors[-1]
+                    
+                    if desired_state != last_led_state and desired_state != "":
+                        self.led_pub.publish(String(data=desired_state))
+                        last_led_state = desired_state
+                        
+                elif curr_shoulder_lift > turn_off_threshold and is_extended_zone:
+                    is_extended_zone = False
+                    self.pub_timing_human.publish(Empty())
+                    desired_state = "off"
+                    
+                    if desired_state != last_led_state:
+                        self.led_pub.publish(String(data=desired_state))
+                        last_led_state = desired_state
+                        
+                    if cycle_idx < len(cycle_colors) - 1:
+                        cycle_idx += 1
+                        self.get_logger().info(f"Series Feedback advanced to Cycle {cycle_idx+1}")
+                
+            time.sleep(0.01)
+            
+        self.led_pub.publish(String(data="off"))
+        self.status_pub.publish(String(data="COMPLETED"))
+        self.get_logger().info("Series (Feedback) Completed.")
 
     def send_goal(self, joint_angles, duration_sec):
         if not self._action_client.wait_for_server(timeout_sec=1.0):

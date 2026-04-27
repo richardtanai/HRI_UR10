@@ -1,0 +1,62 @@
+# ============================================================
+# Robot Sequencer Presets
+# ============================================================
+# Each preset defines a complete sequence configuration:
+#   name:       Display name shown in the GUI dropdown
+#   durations:  Comma-separated wait durations (seconds) per step
+#   led_mode:   LED sync mode (RANDOM, RED, BLUE, OFF)
+#   red_prob:   Probability (0-100) of RED when led_mode is RANDOM
+#   mode:       Execution mode — "time" or "feedback"
+#
+# You can add/remove/reorder presets freely.
+# The GUI will reload this file each time you click "Import".
+# ============================================================
+
+presets:
+  - name: "Quick Test (3 beats)"
+    durations: "1, 1, 1"
+    led_mode: "RANDOM"
+    red_prob: 50
+    mode: "time"
+
+  - name: "Slow Demo (5 beats)"
+    durations: "2, 2, 2, 2, 2"
+    led_mode: "BLUE"
+    red_prob: 50
+    mode: "time"
+
+  - name: "Fast Alternating"
+    durations: "0.5, 0.5, 0.5, 0.5, 0.5, 0.5"
+    led_mode: "RANDOM"
+    red_prob: 50
+    mode: "feedback"
+
+  - name: "Mixed Rhythm"
+    durations: "1, 2, 1, 2, 1"
+    led_mode: "RANDOM"
+    red_prob: 70
+    mode: "time"
+
+  - name: "Long Session (10 beats)"
+    durations: "1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5"
+    led_mode: "RANDOM"
+    red_prob: 50
+    mode: "feedback"
+
+  - name: "Red Dominant"
+    durations: "1, 1, 1, 1, 1"
+    led_mode: "RANDOM"
+    red_prob: 90
+    mode: "time"
+
+  - name: "Blue Only"
+    durations: "1, 2, 1, 2"
+    led_mode: "BLUE"
+    red_prob: 0
+    mode: "feedback"
+
+  - name: "Experiment 1"
+    durations: "1, 2, 1, 2"
+    led_mode: "BLUE"
+    red_prob: 0
+    mode: "feedback"
