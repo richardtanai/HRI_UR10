@@ -618,6 +618,16 @@ class MainWindow(QMainWindow):
         # Recording Section
         rec_group = QGroupBox("Recording")
         rec_layout = QVBoxLayout()
+        
+        dir_layout = QHBoxLayout()
+        dir_layout.addWidget(QLabel("Save Path:"))
+        self.rec_dir_input = QLineEdit(os.path.join(os.path.expanduser("~"), "ur10_recordings"))
+        dir_layout.addWidget(self.rec_dir_input)
+        self.rec_dir_btn = QPushButton("Browse...")
+        self.rec_dir_btn.clicked.connect(self.select_rec_dir)
+        dir_layout.addWidget(self.rec_dir_btn)
+        rec_layout.addLayout(dir_layout)
+
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Filename:"))
         self.rec_name_input = QLineEdit("ur10_record")
@@ -942,9 +952,11 @@ class MainWindow(QMainWindow):
             prefix = self.rec_name_input.text()
             if not prefix: prefix = "ur10_record"
             
-            # Create recording directory in Home
-            home = os.path.expanduser("~")
-            rec_dir = os.path.join(home, "ur10_recordings")
+            # Create recording directory
+            rec_dir = self.rec_dir_input.text()
+            if not rec_dir:
+                home = os.path.expanduser("~")
+                rec_dir = os.path.join(home, "ur10_recordings")
             os.makedirs(rec_dir, exist_ok=True)
             
             timestamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
@@ -1348,6 +1360,11 @@ class MainWindow(QMainWindow):
             msg.data = text
             self.ros_node.duration_pub.publish(msg)
             self.log_message(f"Set Durations: {text}")
+
+    def select_rec_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Recording Directory", self.rec_dir_input.text())
+        if dir_path:
+            self.rec_dir_input.setText(dir_path)
 
     def select_bag_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, 'Open MCAP File', os.getcwd(), "MCAP Files (*.mcap)")

@@ -92,6 +92,7 @@ class RobotSequencer(Node):
         self.execution_thread = None
         self.stop_flag = False
         self.current_joint_positions = None
+        self.LED_ADVANCE_TIME = 0.106
 
         self.get_logger().info("Robot Sequencer Ready. Listening on /robot_sequence/durations")
 
@@ -316,7 +317,7 @@ class RobotSequencer(Node):
             while next_waypoint_to_pass < len(points):
                 p = points[next_waypoint_to_pass]
                 wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
-                if elapsed >= wp_time:
+                if elapsed >= (wp_time - self.LED_ADVANCE_TIME):
                     if next_waypoint_to_pass % 2 == 0:
                         self.pub_timing_robot.publish(Empty())
                     else:
@@ -329,7 +330,7 @@ class RobotSequencer(Node):
             current_target_idx = 0
             for i, p in enumerate(points):
                 wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
-                if elapsed < wp_time:
+                if elapsed < (wp_time - self.LED_ADVANCE_TIME):
                     current_target_idx = i
                     break
             else:
@@ -342,7 +343,7 @@ class RobotSequencer(Node):
                 self.led_pub.publish(color_msg)
                 last_color_idx = current_target_idx
                 
-            time.sleep(0.05)
+            time.sleep(0.005)
             
         result = get_result_future.result().result
         
@@ -461,7 +462,7 @@ class RobotSequencer(Node):
                         cycle_idx += 1
                         self.get_logger().info(f"Feedback Sequencer advanced to Cycle {cycle_idx+1}")
                 
-            time.sleep(0.01) # Fast polling for feedback
+            time.sleep(0.005) # Fast polling for feedback
             
         self.led_pub.publish(String(data="off"))
         self.status_pub.publish(String(data="COMPLETED"))
@@ -546,7 +547,7 @@ class RobotSequencer(Node):
             while next_waypoint_to_pass < len(points):
                 p = points[next_waypoint_to_pass]
                 wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
-                if elapsed >= wp_time:
+                if elapsed >= (wp_time - self.LED_ADVANCE_TIME):
                     if next_waypoint_to_pass % 2 == 0:
                         self.pub_timing_robot.publish(Empty())
                     else:
@@ -558,7 +559,7 @@ class RobotSequencer(Node):
             current_target_idx = 0
             for i, p in enumerate(points):
                 wp_time = p.time_from_start.sec + (p.time_from_start.nanosec * 1e-9)
-                if elapsed < wp_time:
+                if elapsed < (wp_time - self.LED_ADVANCE_TIME):
                     current_target_idx = i
                     break
             else:
@@ -570,7 +571,7 @@ class RobotSequencer(Node):
                 self.led_pub.publish(color_msg)
                 last_color_idx = current_target_idx
                 
-            time.sleep(0.05)
+            time.sleep(0.005)
             
         result = get_result_future.result().result
         
@@ -664,7 +665,7 @@ class RobotSequencer(Node):
                         cycle_idx += 1
                         self.get_logger().info(f"Series Feedback advanced to Cycle {cycle_idx+1}")
                 
-            time.sleep(0.01)
+            time.sleep(0.005)
             
         self.led_pub.publish(String(data="off"))
         self.status_pub.publish(String(data="COMPLETED"))
