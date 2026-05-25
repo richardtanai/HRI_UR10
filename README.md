@@ -84,6 +84,11 @@ pip3 install PyQt5 matplotlib pyserial ultralytics
 > The `ultralytics` (YOLO) library is required by the `human_safety_node` and cannot be installed via `rosdep install` because no standard Ubuntu rosdep key exists. You must install it manually via the pip command above.
 
 ### B. Installing Intel RealSense SDK & ROS 2 Wrapper
+To use the RealSense camera, the official Intel RealSense SDK (`librealsense`) drivers must be installed on your host system. 
+- **Official SDK Repository**: [IntelRealSense/librealsense](https://github.com/IntelRealSense/librealsense)
+- **Official ROS 2 Wrapper Repository**: [IntelRealSense/realsense-ros](https://github.com/IntelRealSense/realsense-ros)
+
+You can install the standard camera drivers and packages using:
 ```bash
 sudo apt update
 sudo apt install -y ros-humble-realsense2-camera ros-humble-realsense2-description
@@ -150,30 +155,34 @@ Before launching the robot accurately for the first time, it is highly recommend
 ---
 
 ## 6. Quick Start (Unified Launch GUI)
-The primary way to interact with the entire system is through the unified PyQt5 GUI.
+The main usage of the system typically involves running the following two GUI interfaces:
 
+### A. Central Launch Control Center
+To launch the main control center GUI which monitors and starts/stops all robot, camera, and Arduino processes:
 1. Source your workspace:
    ```bash
    source ~/hri_ws/install/setup.bash
    ```
-2. Start the control center GUI:
+2. Run the main launch GUI:
    ```bash
    ros2 run ur10_custom_description launch_gui.py
    ```
-3. From the GUI, you can easily control:
-   - **UR10 Robot**: Configure the robot's IP and toggle Fake Hardware on/off. Click **Start Robot** to launch the `ur_robot_driver`.
-   - **Realsense Camera**: Start the depth-enabled pointcloud camera feed.
-   - **Arduino Monitor**: Select your port (e.g., `/dev/ttyACM0`) and click **Start Driver** to view live weight status and sync LED commands.
-   - **Robot Sequencer**: Input a custom time span (e.g. `1, 2, 1`), select LED logic (RANDOM/RED/BLUE), and execute automated cycles.
-   - **Handeye Calibration**: Provide an Eye-on-Base calibration name to quickly publish TF data.
-   - **Recording**: Seamlessly start logging core topics to MCAP bagfiles for playback and analysis.
+   *(Note: In some setups, this can be run as `ros2 run ur10_custom_description launch_gui` depending on symlink exports.)*
 
-Alternatively, to run the helper calibration GUI:
+From the GUI, you can easily control:
+- **UR10 Robot**: Configure the robot's IP and toggle Fake Hardware on/off. Click **Start Robot** to launch the `ur_robot_driver`.
+- **Realsense Camera**: Start the depth-enabled pointcloud camera feed.
+- **Arduino Monitor**: Select your port (e.g., `/dev/ttyACM0`) and click **Start Driver** to view live weight status and sync LED commands.
+- **Robot Sequencer**: Input a custom time span (e.g. `1, 2, 1`), select LED logic (RANDOM/RED/BLUE), and execute automated cycles.
+- **Handeye Calibration**: Provide an Eye-on-Base calibration name to quickly publish TF data.
+- **Recording**: Seamlessly start logging core topics to MCAP bagfiles for playback and analysis.
+
+### B. Calibration Assistant GUI
+To run the specialized GUI for helper calibration workflows:
 ```bash
 ros2 run ur10_calibration calibration_gui
-# Or via its launch file:
-ros2 launch ur10_calibration ur10_calibration.launch.py
 ```
+*(Alternatively, you can launch it using its launch file: `ros2 launch ur10_calibration ur10_calibration.launch.py`)*
 
 ---
 
