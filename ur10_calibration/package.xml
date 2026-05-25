@@ -21,6 +21,17 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>python3-yaml</depend>
+  <depend>moveit_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>python3-opencv</depend>
+  <depend>python3-numpy</depend>
+  <depend>ament_index_python</depend>
+  <exec_depend>ur10_custom_description</exec_depend>
+  <exec_depend>ur_moveit_config</exec_depend>
+  <exec_depend>ur_robot_driver</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>aruco_ros</exec_depend>
+  <exec_depend>easy_handeye2</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

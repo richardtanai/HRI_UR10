@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
             ip = self.robot_ip_input.text()
             fake = self.fake_hardware_chk.isChecked()
             if fake: cmd = "ros2 launch ur10_custom_description ur10_custom.launch.py use_fake_hardware:=true"
-            else: cmd = f"ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur10 robot_ip:={ip} launch_rviz:=false description_package:=ur10_custom_description description_file:=ur10_with_fist.urdf.xacro kinematics_params_file:=\"$HOME/my_ur10_calibration.yaml\""
+            else: cmd = f"ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur10 robot_ip:={ip} launch_rviz:=false description_package:=ur10_custom_description description_file:=ur10_with_fist.urdf.xacro"
             self.launch_manager.launch('robot', cmd)
             self.running_states['robot'] = True
         self.update_buttons()
